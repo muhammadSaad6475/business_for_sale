@@ -1,12 +1,15 @@
-from listingDescriptionHandler import generate_readable_description, generate_readable_title_withAI, generate_image_from_AI
+from listingDescriptionHandler import generate_readable_description, generate_readable_title_withAI, generate_image_from_AI, send_sqs_message
 import scrapy
 import csv
 import json
 from datetime import datetime
 import dotenv
 import re
+import os
 
 dotenv.load_dotenv()
+NEW_IMAGE_SCRAPPED_SQS_URL = os.environ.get("NEW_IMAGE_SCRAPPED_SQS_URL")
+
 
 class BForSaleDataSpider(scrapy.Spider):
     name = "b_for_sale_data"
@@ -143,7 +146,22 @@ class BForSaleDataSpider(scrapy.Spider):
         else:
             title = 'NA'
 
-        image_url = response.css(".gallery::attr(href)").get()
+        dynamic_dict = {}
+        scrapped_image_url = response.css(".gallery::attr(href)").get()
+        dynamic_dict[f"link-1"] = generated_image_url
+
+        if scrapped_image_url:
+            dynamic_dict[f"link-2"] = scrapped_image_url
+
+            # Send a message to the Scrapped Queue
+            # Now send a SNS message so that the image can be processed
+            # Prepare a JSON message with the S3 URL and the file name
+            message = {
+                "article_id": article_id,
+                "s3_url": scrapped_image_url,
+            }
+            # send_sns_message
+            send_sqs_message(NEW_IMAGE_SCRAPPED_SQS_URL, message, article_id)
 
         def safe_strip(value):
             return value.strip() if value else value
@@ -160,7 +178,7 @@ class BForSaleDataSpider(scrapy.Spider):
             "category": computed_category,
             'Title': safe_strip(title),
             'location': safe_strip(address),
-            'image_url': image_url,
+            'listing-photos': json.dumps(dynamic_dict),
             "businessListedBy": broker_listing_party,
             "broker-phone": broker_phone,
             "broker-name": broker_name,

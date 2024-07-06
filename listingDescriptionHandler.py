@@ -6,6 +6,7 @@ import openai
 import requests
 import base64
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
+from PIL import Image, ImageDraw, ImageFont
 
 import dotenv
 import logging
@@ -14,7 +15,7 @@ import sys
 print(sys.executable)
 
 dotenv.load_dotenv()
-
+AI_WATERMARK_TEXT=os.environ.get("AI_WATERMARK_TEXT")
 AWS_REGION_NAME = os.environ.get("AWS_REGION_NAME")
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME")
 # Get today's date in the format YYYYMMDD
@@ -61,6 +62,37 @@ def check_s3_file_exists(bucketname, key):
     print("File Exists: " + str(fileExists))
 
     return fileExists
+
+def watermark_ebit_images(input_image_path, output_image_path, bottom_offset, opacity=128, font_size=36):
+    # Open the original image
+    original = Image.open(input_image_path)
+    original = original.convert("RGBA")  # Convert to RGBA to add transparency to the watermark
+
+    # Make the image editable
+    txt = Image.new('RGBA', original.size, (255, 255, 255, 0))
+
+    # Choose a font and size
+    font = ImageFont.truetype("Arial.ttf", font_size)  # or any other font and size
+
+    # Initialize ImageDraw
+    d = ImageDraw.Draw(txt)
+
+    # Position the text at the bottom-right corner
+    textwidth, textheight = d.textsize(AI_WATERMARK_TEXT, font=font)
+
+
+    x = (original.width - textwidth) / 2  # Calculate x position to center the text
+    y = original.height - textheight - bottom_offset  # Calculate y position from the bottom
+
+    # Apply the watermark text
+    d.text((x, y), AI_WATERMARK_TEXT, font=font, fill=(255, 255, 255, opacity))
+
+    # Combine the original image with the text image
+    watermarked = Image.alpha_composite(original, txt)
+
+    # Convert back to RGB and save the image
+    watermarked = watermarked.convert("RGB")
+    watermarked.save(output_image_path)
 
 
 def send_sqs_message(queue_url, message, message_group_id):
@@ -136,12 +168,16 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
             file.write(response.content)
     
         print('Image generated and saved as', local_image_path)
+        local_watermarked_image_path = 'generated_image_watermarked.png'
 
+        # Watermark AI images before uploading to S3
+        watermark_ebit_images(local_image_path, local_watermarked_image_path, 10, 150, 20)
+        
         # Upload the image to S3
         s3_client = boto3.client('s3')
 
         try:
-            s3_client.upload_file(local_image_path, s3_bucket_name, s3_object_key)
+            s3_client.upload_file(local_watermarked_image_path, s3_bucket_name, s3_object_key)
             print(f'Image uploaded to S3 bucket {s3_bucket_name} with key {s3_object_key}')
 
             # Now send a SNS message so that the image can be processed
