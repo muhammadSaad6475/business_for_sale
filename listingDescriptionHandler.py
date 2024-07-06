@@ -25,6 +25,11 @@ DYNAMODB_TABLE_NAME = f"{DYNAMODB_TABLE_NAME}-{today_date}"
 OPENAI_KEY = os.environ.get("OPENAI_KEY")
 IMAGE_STABILITY_AI_API_KEY = os.environ.get("IMAGE_STABILITY_AI_API_KEY")
 
+# Send a message to SQS
+AI_IMAGE_CREATED_SQS_URL = os.environ.get("AI_IMAGE_CREATED_SQS_URL")
+NEW_IMAGE_SCRAPPED_SQS_URL = os.environ.get("NEW_IMAGE_SCRAPPED_SQS_URL")
+
+
 filePath = "/Users/vikas/builderspace/EBITA/files/" + DYNAMODB_TABLE_NAME
 
 # Configure AWS and OpenAI credentials
@@ -38,17 +43,39 @@ def check_s3_file_exists(bucketname, key):
     s3 = boto3.client('s3')
     fileExists = False
 
+    print("Checking of S3 files exists for key " + key + "in bucket " + bucketname)
     try:
         # Try to get the object from the S3 bucket
         s3.head_object(Bucket=bucketname, Key=key)
         fileExists = True
-    except s3.exceptions.NoSuchKey:
+    except s3.exceptions.NoSuchKey as e:
         fileExists = False
+        print(f"No Such Key error: {str(e)}")
     except (NoCredentialsError, PartialCredentialsError) as e:
-        return f"Credentials error: {str(e)}"
+        fileExists = False
+        print(f"Credentials error: {str(e)}")
     except Exception as e:
-        return f"Error accessing S3: {str(e)}"
+        fileExists = False
+        print(f"Error accessing S3: {str(e)}")
+    
+    print("File Exists: " + str(fileExists))
+
     return fileExists
+
+
+def send_sqs_message(queue_url, message, message_group_id):
+    try:
+        sqs = boto3.client('sqs', region_name='us-east-2')
+
+        response = sqs.send_message(
+            QueueUrl=queue_url,
+            MessageBody=json.dumps(message),  # Ensure the message is a JSON formatted string
+            MessageGroupId=message_group_id  # Required for FIFO queues
+        )
+        return response
+    except Exception as e:
+        print(f"Error sending message to Queue: {str(e)}")
+
 
 def generate_image_from_AI(business_description, article_id, businesses_title):
 
@@ -66,7 +93,7 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
     
     # Define the S3 bucket and object key
     s3_bucket_name = os.environ.get("IMAGE_STABILITY_AI_GENERATED_S3_Bucket_KEY")
-    s3_object_key = article_id+'_BBS.png'
+    s3_object_key = article_id+'_BFS.png'
     print(f"s3_bucket_name {s3_bucket_name}, amd key {s3_object_key}.")
     print(f"api_key {api_key}.")
     print(f"prompt {prompt}.")
@@ -76,6 +103,7 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
     print(f'S3 URL: {s3_url}')
     
     generatedFileExistsForThisListing = check_s3_file_exists(s3_bucket_name, s3_object_key)
+    print(f'generatedFileExistsForThisListing is: {generatedFileExistsForThisListing}')
 
     if (generatedFileExistsForThisListing):
         print(f'Found an existing EBITGen image at S3 URL: {s3_url}')
@@ -91,8 +119,8 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
         },
         files={"none": ''},
         data={
-            "prompt": {prompt},
-            "output_format": "jpeg"
+            "prompt": prompt,
+            "output_format": 'jpeg'
         },
     )
 
@@ -116,6 +144,15 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
             s3_client.upload_file(local_image_path, s3_bucket_name, s3_object_key)
             print(f'Image uploaded to S3 bucket {s3_bucket_name} with key {s3_object_key}')
 
+            # Now send a SNS message so that the image can be processed
+            # Prepare a JSON message with the S3 URL and the file name
+            message = {
+                "article_id": article_id,
+                "s3_url": s3_url,
+            }
+            # send_sns_message
+            send_sqs_message(AI_IMAGE_CREATED_SQS_URL, message, article_id)
+
             return s3_url
             
         except FileNotFoundError:
@@ -133,9 +170,10 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
 def generate_readable_description(business_description):
     prompt = (
         f"Convert the following verbose business description into a concise, "
-        f"human-readable description in 3 paragraphs:\n\n{business_description}"
+        f"human-readable description in 3 paragraphs:\n\n" + business_description
     )
 
+    print("prompt os ", prompt)
     # Create a chat completion using the OpenAI API
     chat_completion = client.chat.completions.create(
         model="gpt-3.5-turbo",  # Ensure this model is available or update as necessary

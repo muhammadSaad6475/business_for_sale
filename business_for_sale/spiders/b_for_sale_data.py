@@ -30,14 +30,8 @@ class BForSaleDataSpider(scrapy.Spider):
             lines = file.readlines()
             # Process each line
             for line in lines:
-                line = line.strip()  # Remove any leading/trailing whitespace
-                if line:
-                    # Split the line on comma to extract category and URL
-                    parts = line.split(',')
-                    if len(parts) >= 2:
-                        category = parts[0].strip()
-                        url = parts[1].strip()
-
+                url = line.strip()  # Remove any leading/trailing whitespace
+                if url:
                         # Send the request with the category included in the meta data
                         yield scrapy.Request(url=url, callback=self.parse)
 
@@ -91,20 +85,28 @@ class BForSaleDataSpider(scrapy.Spider):
 
     def parse_business(self, response):
         listing_urls = response.css("h2 a::attr(href)").getall()
-    
+        category = self.extractCategory(response.url)  # Extract category once for all listings on the page
+
         for url in listing_urls:
             if '/franchises/' in url:
                 yield scrapy.Request(url, callback=self.extract_franchise_data, meta={'listing_url': url,})
             else:
-                yield scrapy.Request(url, callback=self.extract_business_data, )
+                category = self.extractCategory(response.url)
+                yield scrapy.Request(url, callback=self.extract_business_data, meta={'category': category})
 
         next_page = response.css(".next-link a::attr(href)").get()
         if next_page:
             yield scrapy.Request(url=next_page, callback=self.parse_business, )
 
-    def extract_business_data(self, response, category):
+    def extract_business_data(self, response):
         listing_url = response.url
+        category = response.meta['category']  # This should correctly extract the category
+
         article_id = response.css('#listing-id::text').get()
+        if (article_id):
+            article_id = article_id.strip()
+            article_id = article_id.replace('\r', '').replace('\n', '')
+
         businesses_title = response.css("h1::text").get()
         businesses_title = businesses_title.replace('\r', '').replace('\n', '')
 
@@ -120,10 +122,14 @@ class BForSaleDataSpider(scrapy.Spider):
         other_information = self.extract_information(response, 'div#other-information')
 
         raw_business_description = response.css('.section-break:nth-child(1)').xpath('string()').get()
-        cleaned_business_description = ' '.join([desc.strip() for desc in raw_business_description if desc.strip()])
-        cleaned_business_description = cleaned_business_description.replace('\r', '').replace('\n', '')
-        scraped_business_description_text = cleaned_business_description if cleaned_business_description else 'NA'
+        print("raw_business_description is", raw_business_description)
+
+        #cleaned_business_description = ' '.join([desc.strip() for desc in raw_business_description if desc.strip()])
+        raw_business_description = raw_business_description.replace('\r', '').replace('\n', '')
+        scraped_business_description_text = raw_business_description if raw_business_description else 'NA'
         generated_image_url = "https://publiclistingphotos.s3.amazonaws.com/no-photo.jpg"
+
+        print("scraped_business_description_text is", scraped_business_description_text)
 
         if (scraped_business_description_text and scraped_business_description_text != 'NA' and scraped_business_description_text != ""):
             business_description = generate_readable_description(scraped_business_description_text)
