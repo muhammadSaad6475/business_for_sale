@@ -363,6 +363,3 @@ def generate_readable_title_withAI(business_description):
     generated_title = generated_title.replace('"', "").replace("'", "")
 
     return generated_title
-
-
-
