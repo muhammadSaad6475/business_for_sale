@@ -7,6 +7,7 @@ import requests
 import base64
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
 from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
 
 import dotenv
 import logging
@@ -30,6 +31,8 @@ IMAGE_STABILITY_AI_API_KEY = os.environ.get("IMAGE_STABILITY_AI_API_KEY")
 AI_IMAGE_CREATED_SQS_URL = os.environ.get("AI_IMAGE_CREATED_SQS_URL")
 NEW_IMAGE_SCRAPPED_SQS_URL = os.environ.get("NEW_IMAGE_SCRAPPED_SQS_URL")
 
+# Define the S3 bucket and object key
+s3_bucket_name = os.environ.get("IMAGE_STABILITY_AI_GENERATED_S3_Bucket_KEY")
 
 filePath = "/Users/vikas/builderspace/EBITA/files/" + DYNAMODB_TABLE_NAME
 
@@ -63,6 +66,74 @@ def check_s3_file_exists(bucketname, key):
 
     return fileExists
 
+def resize_and_convert_image(input_image_path, size, original_s3_object_key):
+    print("The file name is ", input_image_path)
+    # Split the file name from the extension
+    s3_key_to_be_used, extension = os.path.splitext(original_s3_object_key)
+
+    # Print or return, based on your need
+    print("File name without extension:", s3_key_to_be_used)
+    print("Extension:", extension)
+
+    # Check if the path is a URL or a local path
+    if input_image_path.startswith(('http://', 'https://')):
+        response = requests.get(input_image_path)
+        image = Image.open(BytesIO(response.content))
+        input_file_name = os.path.basename(input_image_path)
+    else:
+        image = Image.open(input_image_path)
+        input_file_name = os.path.basename(input_image_path)
+
+    # Split the file name from the extension
+    input_file_name_without_extension, extension = os.path.splitext(input_file_name)
+
+    print("File name:", input_file_name, input_file_name_without_extension, extension)
+
+    
+    # Convert PNG to RGB if necessary (JPEG does not support alpha channel)
+    if image.mode in ('RGBA', 'LA'):
+        background = Image.new(image.mode[:-1], image.size, (255, 255, 255))
+        background.paste(image, image.split()[-1])
+        image = background.convert('RGB')
+
+    # Resize the image using high-quality filter
+    resized_image = image.resize(size, Image.LANCZOS)
+
+    # Construct the output filename using the file_name_without_extension
+    output_filename = f"{input_file_name_without_extension}_{size[0]}x{size[1]}.jpg"
+        
+    # Save the resized image in JPEG format with high quality
+    resized_image.save(output_filename, 'JPEG', quality=95)  # High quality setting
+
+    print("All images have been resized, converted to JPEG, and saved.")
+
+    # Upload the image to S3
+    s3_client = boto3.client('s3')
+    s3_object_key = f"{s3_key_to_be_used}_{size[0]}x{size[1]}.jpg"
+
+    try:
+        s3_url = f'https://{s3_bucket_name}.s3.amazonaws.com/{s3_object_key}'
+
+        s3_client.upload_file(output_filename, s3_bucket_name, s3_object_key)
+        print(f'Image uploaded to S3 bucket {s3_bucket_name} with key {s3_object_key}')
+        
+        # After upload, delete the local file to free up space
+        try:
+            os.remove(output_filename)
+            print(f"Successfully deleted local file: {output_filename}")
+        except Exception as e:
+            print(f"Failed to delete local file: {e}")
+
+        return s3_url
+        
+    except FileNotFoundError:
+        print('The file was not found')
+    except NoCredentialsError:
+        print('Credentials not available')
+    except Exception as e:
+        print(f'An error occurred: {e}')
+
+
 def watermark_ebit_images(input_image_path, output_image_path, bottom_offset, opacity=128, font_size=36):
     # Open the original image
     original = Image.open(input_image_path)
@@ -95,7 +166,7 @@ def watermark_ebit_images(input_image_path, output_image_path, bottom_offset, op
     watermarked.save(output_image_path)
 
 
-def send_sqs_message(queue_url, message, message_group_id):
+def deprecate_send_sqs_message(queue_url, message, message_group_id):
     try:
         sqs = boto3.client('sqs', region_name='us-east-2')
 
@@ -107,6 +178,23 @@ def send_sqs_message(queue_url, message, message_group_id):
         return response
     except Exception as e:
         print(f"Error sending message to Queue: {str(e)}")
+
+def existing_ai_images_dict(s3_url, s3_key):
+    ai_image_dict = {}
+    ai_image_dict["original"] = s3_url
+
+    s3_key_original, extension = os.path.splitext(s3_key)
+
+    # Sizes you want to resize your image to
+    sizes = [(851, 420), (526, 240), (146, 202), (411, 243), (265, 146)]
+
+    for size in sizes:
+        s3_object_key_to_be_used = f"{s3_key_original}_{size[0]}x{size[1]}.jpg"
+        s3_url = f'https://{s3_bucket_name}.s3.amazonaws.com/{s3_object_key_to_be_used}'
+        key = f"{size[0]}x{size[1]}"
+        ai_image_dict[key] = s3_url
+
+    return ai_image_dict
 
 
 def generate_image_from_AI(business_description, article_id, businesses_title):
@@ -123,8 +211,6 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
     if api_key is None:
         raise Exception("Missing Stability API key.")
     
-    # Define the S3 bucket and object key
-    s3_bucket_name = os.environ.get("IMAGE_STABILITY_AI_GENERATED_S3_Bucket_KEY")
     s3_object_key = article_id+'_BFS.png'
     print(f"s3_bucket_name {s3_bucket_name}, amd key {s3_object_key}.")
     print(f"api_key {api_key}.")
@@ -139,7 +225,7 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
 
     if (generatedFileExistsForThisListing):
         print(f'Found an existing EBITGen image at S3 URL: {s3_url}')
-        return s3_url
+        return existing_ai_images_dict(s3_url, s3_object_key)
 
     print(f'No existing EBITGen image at S3 URL. Creating a new one: {s3_url}')
 
@@ -173,12 +259,35 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
         # Watermark AI images before uploading to S3
         watermark_ebit_images(local_image_path, local_watermarked_image_path, 10, 150, 20)
         
-        # Upload the image to S3
+        ai_image_dict = {}
+        # Sizes you want to resize your image to
+        sizes = [(851, 420), (526, 240), (146, 202), (411, 243), (265, 146)]
+
+        for size in sizes:
+            resized_s3_url = resize_and_convert_image(local_watermarked_image_path, size, s3_object_key)
+            key = f"{size[0]}x{size[1]}"
+            ai_image_dict[key] = resized_s3_url
+
+        # Upload the original image to S3
         s3_client = boto3.client('s3')
 
         try:
+            s3_url = f'https://{s3_bucket_name}.s3.amazonaws.com/{s3_object_key}'
+
             s3_client.upload_file(local_watermarked_image_path, s3_bucket_name, s3_object_key)
             print(f'Image uploaded to S3 bucket {s3_bucket_name} with key {s3_object_key}')
+
+            ai_image_dict["original"] = s3_url
+
+            print("ai_image_dict ios ", ai_image_dict)
+
+            # After upload, delete the local file to free up space
+            try:
+                os.remove(local_watermarked_image_path)
+                print(f"Successfully deleted local file: {local_watermarked_image_path}")
+            except Exception as e:
+                print(f"Failed to delete local file: {e}")
+
 
             # Now send a SNS message so that the image can be processed
             # Prepare a JSON message with the S3 URL and the file name
@@ -187,9 +296,9 @@ def generate_image_from_AI(business_description, article_id, businesses_title):
                 "s3_url": s3_url,
             }
             # send_sns_message
-            send_sqs_message(AI_IMAGE_CREATED_SQS_URL, message, article_id)
+            #send_sqs_message(AI_IMAGE_CREATED_SQS_URL, message, article_id)
 
-            return s3_url
+            return ai_image_dict
             
         except FileNotFoundError:
             print('The file was not found')

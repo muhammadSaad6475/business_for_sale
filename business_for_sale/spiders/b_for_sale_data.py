@@ -1,4 +1,4 @@
-from listingDescriptionHandler import generate_readable_description, generate_readable_title_withAI, generate_image_from_AI, send_sqs_message
+from listingDescriptionHandler import generate_readable_description, generate_readable_title_withAI, generate_image_from_AI, resize_and_convert_image
 import scrapy
 import csv
 import json
@@ -133,11 +133,13 @@ class BForSaleDataSpider(scrapy.Spider):
         generated_image_url = "https://publiclistingphotos.s3.amazonaws.com/no-photo.jpg"
 
         print("scraped_business_description_text is", scraped_business_description_text)
+        ai_images_dict = {}
 
         if (scraped_business_description_text and scraped_business_description_text != 'NA' and scraped_business_description_text != ""):
             business_description = generate_readable_description(scraped_business_description_text)
 
-            generated_image_url = generate_image_from_AI(business_description, article_id, businesses_title)            
+            ai_images_dict = generate_image_from_AI(business_description, article_id, businesses_title)
+
         else:
             business_description = scraped_business_description_text
 
@@ -146,12 +148,33 @@ class BForSaleDataSpider(scrapy.Spider):
         else:
             title = 'NA'
 
-        dynamic_dict = {}
         scrapped_image_url = response.css(".gallery::attr(href)").get()
-        dynamic_dict[f"link-1"] = generated_image_url
+
+        dynamic_dict = []
+        dynamic_dict.append(ai_images_dict)
+#        dynamic_dict.update(ai_images_dict)
+
+        print("dynamic_dict after AI Image Dict", dynamic_dict)
+
+        print("dynamic_dict after AI Image Dict", json.dumps(dynamic_dict))
 
         if scrapped_image_url:
-            dynamic_dict[f"link-2"] = scrapped_image_url
+            scrapped_images_dict = {}
+            # Sizes you want to resize your image to
+            sizes = [(851, 420), (526, 240), (146, 202), (411, 243), (265, 146)]
+            s3_object_key = article_id+"_BFS_Scrapped.png"
+
+            for size in sizes:
+                resized_s3_url = resize_and_convert_image(scrapped_image_url, size, s3_object_key)
+                key = f"{size[0]}x{size[1]}"
+                scrapped_images_dict[key] = resized_s3_url
+
+            dynamic_dict.append(scrapped_images_dict)
+            
+
+            print("dynamic_dict after Scrapped Image Dict", dynamic_dict)
+
+            print("dynamic_dict after Scrapped Image Dict", json.dumps(dynamic_dict))
 
             # Send a message to the Scrapped Queue
             # Now send a SNS message so that the image can be processed
@@ -161,7 +184,7 @@ class BForSaleDataSpider(scrapy.Spider):
                 "s3_url": scrapped_image_url,
             }
             # send_sns_message
-            send_sqs_message(NEW_IMAGE_SCRAPPED_SQS_URL, message, article_id)
+            #send_sqs_message(NEW_IMAGE_SCRAPPED_SQS_URL, message, article_id)
 
         def safe_strip(value):
             return value.strip() if value else value
@@ -170,6 +193,9 @@ class BForSaleDataSpider(scrapy.Spider):
         broker_listing_party = "broker_listing_party"
         broker_phone = "broker_phone"
         broker_name = "broker_name"
+
+        print("dynamic_dict ready to be written", dynamic_dict)
+        print("dynamic_dict ready to be written", json.dumps(dynamic_dict))
 
         item = {
             "ad_id": str(safe_strip(article_id))+"_BFS",
@@ -187,7 +213,6 @@ class BForSaleDataSpider(scrapy.Spider):
             'gross_revenue': safe_strip(sales_revenue),
             'scraped_business_description': scraped_business_description_text,
             'business_description': business_description,
-            'generate_image_from_AI': generated_image_url,
             'property_information': property_information,
             'business_operation': business_operation,
             'other_information': other_information,
@@ -214,12 +239,22 @@ class BForSaleDataSpider(scrapy.Spider):
 
     @staticmethod
     def write_to_json(filename, item):
-        try:
+        data = []
+
+        # Check if the file exists and is not empty before trying to load it
+        if os.path.exists(filename) and os.path.getsize(filename) > 0:
             with open(filename, 'r', encoding='utf-8') as file:
-                data = json.load(file)
-        except FileNotFoundError:
-            data = []
+                try:
+                    data = json.load(file)  # Load existing data
+                except json.JSONDecodeError:
+                    print(f"Error decoding JSON from file {filename}. Starting with an empty list.")
+                    # If JSON is corrupt, start with an empty list
+                    data = []
+
+        # Append new item to the list
         data.append(item)
+
+        # Always open the file in write mode to overwrite existing content or create new
         with open(filename, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
 
