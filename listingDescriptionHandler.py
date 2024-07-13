@@ -66,6 +66,124 @@ def check_s3_file_exists(bucketname, key):
 
     return fileExists
 
+def resize_and_convert_image(input_image_path, size, original_s3_object_key, referrer=""):
+    print("The file name is ", input_image_path)
+    # Split the file name from the extension
+    s3_key_to_be_used, extension = os.path.splitext(original_s3_object_key)
+
+    # Print or return, based on your need
+    print("File name without extension:", s3_key_to_be_used)
+    print("Extension:", extension)
+
+    try:
+        # Check if the path is a URL or a local path
+        if input_image_path.startswith(('http://', 'https://')):
+
+            # Referrer URL
+            headers = {
+                'Referer': referrer,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+            }
+
+            response = requests.get(input_image_path, headers=headers, timeout=5)
+            response.raise_for_status()  # Raises an HTTPError for bad responses
+            print("HTTP Status Code:", response.status_code)
+            print("Content-Type:", response.headers['Content-Type'])
+            # Only process the image if the content type is correct
+            if 'image' in response.headers['Content-Type']:
+                image = Image.open(BytesIO(response.content))
+                input_file_name = os.path.basename(input_image_path)
+        else:
+            image = Image.open(input_image_path)
+            input_file_name = os.path.basename(input_image_path)
+
+        # Split the file name from the extension
+        input_file_name_without_extension, extension = os.path.splitext(input_file_name)
+
+        print("File name:", input_file_name, input_file_name_without_extension, extension)
+
+        
+        # Convert PNG to RGB if necessary (JPEG does not support alpha channel)
+        if image.mode in ('RGBA', 'LA'):
+            background = Image.new(image.mode[:-1], image.size, (255, 255, 255))
+            background.paste(image, image.split()[-1])
+            image = background.convert('RGB')
+
+        target_width = size[0]
+        target_height = size[1]
+        print("File target width and height:", target_width, target_height)
+
+        # Calculate the target aspect ratio
+        target_aspect_ratio = target_width / target_height
+        original_width, original_height = image.size
+        print("File original width and height:", original_width, original_height)
+
+        # Calculate cropping box
+        if original_width / original_height > target_aspect_ratio:
+            new_width = int(original_height * target_aspect_ratio)
+            left = (original_width - new_width) // 2
+            box = (left, 0, left + new_width, original_height)
+        else:
+            new_height = int(original_width / target_aspect_ratio)
+            top = (original_height - new_height) // 2
+            box = (0, top, original_width, top + new_height)
+
+        # Crop the image
+        cropped_image = image.crop(box)
+
+        # Resize the image
+        resized_image = cropped_image.resize((target_width, target_height), Image.ANTIALIAS)
+
+        # Resize the image using high-quality filter
+        #resized_image = image.resize(size, Image.LANCZOS)
+
+        # Construct the output filename using the file_name_without_extension
+        output_filename = f"{input_file_name_without_extension}_{size[0]}x{size[1]}.jpg"
+            
+        # Save the resized image in JPEG format with high quality
+        resized_image.save(output_filename, 'JPEG', quality=95)  # High quality setting
+
+        print("All images have been resized, converted to JPEG, and saved.")
+
+        # Upload the image to S3
+        s3_client = boto3.client('s3')
+        s3_object_key = f"{s3_key_to_be_used}_{size[0]}x{size[1]}.jpg"
+    except requests.exceptions.Timeout:
+        # Handle timeouts specifically
+        print("Request timed out: Skipping this image.")
+        sourceImageTimedOut = True
+        return input_image_path
+    except requests.exceptions.HTTPError as e:
+        # Handle HTTP errors (like 404, 500, etc.)
+        print(f"HTTP error occurred: {e}")
+    except requests.exceptions.RequestException as e:
+        # Handle other possible exceptions
+        print(f"Error fetching image: {e}")
+
+
+    try:
+        s3_url = f'https://{s3_bucket_name}.s3.amazonaws.com/{s3_object_key}'
+
+        s3_client.upload_file(output_filename, s3_bucket_name, s3_object_key)
+        print(f'Image uploaded to S3 bucket {s3_bucket_name} with key {s3_object_key}')
+        
+        # After upload, delete the local file to free up space
+        try:
+            os.remove(output_filename)
+            print(f"Successfully deleted local file: {output_filename}")
+        except Exception as e:
+            print(f"Failed to delete local file: {e}")
+
+        return s3_url
+        
+    except FileNotFoundError:
+        print('The file was not found')
+    except NoCredentialsError:
+        print('Credentials not available')
+    except Exception as e:
+        print(f'An error occurred: {e}')
+
+'''
 def resize_and_convert_image(input_image_path, size, original_s3_object_key):
     print("The file name is ", input_image_path)
     # Split the file name from the extension
@@ -132,7 +250,7 @@ def resize_and_convert_image(input_image_path, size, original_s3_object_key):
         print('Credentials not available')
     except Exception as e:
         print(f'An error occurred: {e}')
-
+'''
 
 def watermark_ebit_images(input_image_path, output_image_path, bottom_offset, opacity=128, font_size=36):
     # Open the original image

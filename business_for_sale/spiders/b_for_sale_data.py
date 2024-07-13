@@ -6,6 +6,8 @@ from datetime import datetime
 import dotenv
 import re
 import os
+import boto3
+
 
 dotenv.load_dotenv()
 NEW_IMAGE_SCRAPPED_SQS_URL = os.environ.get("NEW_IMAGE_SCRAPPED_SQS_URL")
@@ -189,6 +191,27 @@ class BForSaleDataSpider(scrapy.Spider):
         def safe_strip(value):
             return value.strip() if value else value
 
+        def extract_lower_range(range):
+            # Remove dollar sign and whitespace
+            clean_range = range.replace('$', '').replace(' ', '')
+
+            # Check if the input is a range
+            if '-'  in clean_range:            
+                # Split the range into lower and upper bounds
+                lower_bound = clean_range.split('-')[0]
+            else:
+                lower_bound = clean_range
+            
+            # Convert to absolute number
+            if 'K' in lower_bound:
+                lower_bound = int(float(lower_bound.replace('K', '')) * 1000)
+            elif 'M' in lower_bound:
+                lower_bound = int(float(lower_bound.replace('M', '')) * 1000000)
+            else:
+                lower_bound = int(lower_bound)
+            
+            return lower_bound
+
         computed_category = category
         broker_listing_party = "broker_listing_party"
         broker_phone = "broker_phone"
@@ -196,6 +219,12 @@ class BForSaleDataSpider(scrapy.Spider):
 
         print("dynamic_dict ready to be written", dynamic_dict)
         print("dynamic_dict ready to be written", json.dumps(dynamic_dict))
+
+        cash_flow = safe_strip(cash_flow)
+        cash_flow = extract_lower_range(cash_flow)
+
+        sales_revenue = safe_strip(sales_revenue)
+        sales_revenue = extract_lower_range(sales_revenue)
 
         item = {
             "ad_id": str(safe_strip(article_id))+"_BFS",
@@ -209,8 +238,8 @@ class BForSaleDataSpider(scrapy.Spider):
             "broker-phone": broker_phone,
             "broker-name": broker_name,
             'asking_price': safe_strip(asking_price),
-            'cash_flow': safe_strip(cash_flow),
-            'gross_revenue': safe_strip(sales_revenue),
+            'cash_flow': cash_flow,
+            'gross_revenue': sales_revenue,
             'scraped_business_description': scraped_business_description_text,
             'business_description': business_description,
             'property_information': property_information,
@@ -257,6 +286,27 @@ class BForSaleDataSpider(scrapy.Spider):
         # Always open the file in write mode to overwrite existing content or create new
         with open(filename, 'w', encoding='utf-8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
+
+def upload_to_s3(file_name, bucket, object_name=None):
+    """
+    Upload a file to an S3 bucket
+
+    :param file_name: File to upload
+    :param bucket: Bucket to upload to
+    :param object_name: S3 object name. If not specified, file_name is used
+    """
+    # If S3 object_name was not specified, use file_name
+    if object_name is None:
+        object_name = file_name
+
+    # Upload the file
+    s3_client = boto3.client('s3')
+    try:
+        response = s3_client.upload_file(file_name, bucket, object_name)
+    except Exception as e:
+        return False
+    return True
+
 
     @staticmethod
     def extract_information(response, selector):
