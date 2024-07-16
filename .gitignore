@@ -5,3 +5,4 @@ venv/
 *.jpg
 *.json
 business_for_sale/business_for_sale_data20240706.json
+business_for_sale/generated_image.png

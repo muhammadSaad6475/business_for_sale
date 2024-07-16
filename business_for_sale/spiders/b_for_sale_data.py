@@ -103,6 +103,16 @@ class BForSaleDataSpider(scrapy.Spider):
         if next_page:
             yield scrapy.Request(url=next_page, callback=self.parse_business, )
 
+    def extract_information(self, response, selector):
+        section = response.css(selector)
+        data = {}
+        for dl in section.css('dl.listing-details'):
+            dt = dl.css('dt::text').get().strip()
+            dd = dl.css('dd p::text, dd::text').getall()
+            dd = ' '.join([d.strip() for d in dd if d.strip()])
+            data[dt] = dd
+        return data
+
     def extract_business_data(self, response):
         listing_url = response.url
         category = response.meta['category']  # This should correctly extract the category
@@ -192,8 +202,8 @@ class BForSaleDataSpider(scrapy.Spider):
             return value.strip() if value else value
 
         def extract_lower_range(range):
-            # Remove dollar sign and whitespace
-            clean_range = range.replace('$', '').replace(' ', '')
+            # Remove dollar sign, whitespace, and commas
+            clean_range = range.replace('$', '').replace(' ', '').replace(',', '')
 
             # Check if the input is a range
             if '-'  in clean_range:            
@@ -231,15 +241,23 @@ class BForSaleDataSpider(scrapy.Spider):
             "source": "BusinessForSale",
             "article_url": listing_url,
             "category": computed_category,
-            'Title': safe_strip(title),
+            'title': safe_strip(title),
             'location': safe_strip(address),
             'listing-photos': json.dumps(dynamic_dict),
+            'attached-documents': "NA",
             "businessListedBy": broker_listing_party,
             "broker-phone": broker_phone,
             "broker-name": broker_name,
             'asking_price': safe_strip(asking_price),
             'cash_flow': cash_flow,
+            'rent': "NA",
+            'established': "NA",
             'gross_revenue': sales_revenue,
+            'EBITDA': cash_flow,
+            'FF&E': "NA",
+            'inventory': "NA",
+            'real_estate': "NA",
+            'reason_for_selling': "Not Provided",
             'scraped_business_description': scraped_business_description_text,
             'business_description': business_description,
             'property_information': property_information,
@@ -306,15 +324,3 @@ def upload_to_s3(file_name, bucket, object_name=None):
     except Exception as e:
         return False
     return True
-
-
-    @staticmethod
-    def extract_information(response, selector):
-        section = response.css(selector)
-        data = {}
-        for dl in section.css('dl.listing-details'):
-            dt = dl.css('dt::text').get().strip()
-            dd = dl.css('dd p::text, dd::text').getall()
-            dd = ' '.join([d.strip() for d in dd if d.strip()])
-            data[dt] = dd
-        return data
