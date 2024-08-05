@@ -223,9 +223,9 @@ class BForSaleDataSpider(scrapy.Spider):
             return lower_bound
 
         computed_category = category
-        broker_listing_party = "broker_listing_party"
-        broker_phone = "broker_phone"
-        broker_name = "broker_name"
+        broker_listing_party = ""
+        broker_phone = ""
+        broker_name = ""
 
         print("dynamic_dict ready to be written", dynamic_dict)
         print("dynamic_dict ready to be written", json.dumps(dynamic_dict))
