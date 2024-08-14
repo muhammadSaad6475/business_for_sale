@@ -22,14 +22,26 @@ class BForSaleDataSpider(scrapy.Spider):
         if match:
             # Extract the segment found by the regex
             segment = match.group(1)
+
+            # Remove known suffixes like '-for-sale', '-for-sale-2', etc.
+            segment = re.sub(r'(-for-sale(-\d*)?)$', '', segment)
+
             # Replace dashes with spaces and capitalize each word
             formatted_segment = ' '.join(word.capitalize() for word in segment.split('-'))
             return formatted_segment
         return "Category not found"
     
     def start_requests(self):
-        # Path to the input file
-        file_path = '/Users/vikas/builderspace/business_for_sale/input_urls/businessforsale_url.txt'
+        # Get the environment variable value
+        env_value = os.getenv('RUN_ENV', 'local')  # Default to 'local' if not set
+
+        if env_value == 'production':
+            
+            # Path to the input file
+            file_path = '/home/ubuntu/business_for_sale/input_urls/businessforsale_url.txt'
+        else:
+            # Path to the input file
+            file_path = '/Users/vikas/builderspace/business_for_sale/input_urls/businessforsale_url.txt'
 
         with open(file_path, 'r') as file:
             lines = file.readlines()
@@ -37,8 +49,8 @@ class BForSaleDataSpider(scrapy.Spider):
             for line in lines:
                 url = line.strip()  # Remove any leading/trailing whitespace
                 if url:
-                        # Send the request with the category included in the meta data
-                        yield scrapy.Request(url=url, callback=self.parse)
+                    # Send the request with the category included in the meta data
+                    yield scrapy.Request(url=url, callback=self.parse)
 
     def parse(self, response, **kwargs):
         
@@ -113,6 +125,15 @@ class BForSaleDataSpider(scrapy.Spider):
             data[dt] = dd
         return data
 
+    def extract_owner_financing(self, other_information):
+        # Look for keys related to owner financing
+        owner_financing = other_information.get("Owner financing:", None)
+        ownerFinanced = False
+        if owner_financing:
+            ownerFinanced = True
+
+        return ownerFinanced
+
     def extract_business_data(self, response):
         listing_url = response.url
         category = response.meta['category']  # This should correctly extract the category
@@ -135,6 +156,9 @@ class BForSaleDataSpider(scrapy.Spider):
         property_information = self.extract_information(response, 'div#property-information')
         business_operation = self.extract_information(response, 'div#business-operation')
         other_information = self.extract_information(response, 'div#other-information')
+
+        # Extract owner financing information if available
+        sellerFinacingAvailable = self.extract_owner_financing(other_information)
 
         raw_business_description = response.css('.section-break:nth-child(1)').xpath('string()').get()
         print("raw_business_description is", raw_business_description)
@@ -177,12 +201,15 @@ class BForSaleDataSpider(scrapy.Spider):
             s3_object_key = article_id+"_BFS_Scrapped.png"
 
             for size in sizes:
-                resized_s3_url = resize_and_convert_image(scrapped_image_url, size, s3_object_key)
-                key = f"{size[0]}x{size[1]}"
-                scrapped_images_dict[key] = resized_s3_url
+                try:
+                    resized_s3_url = resize_and_convert_image(scrapped_image_url, size, s3_object_key)
+                    key = f"{size[0]}x{size[1]}"
+                    scrapped_images_dict[key] = resized_s3_url
+                except OSError as e:
+                    self.logger.error(f"Error processing image {scrapped_image_url}: {e}")
+                    continue
 
             dynamic_dict.append(scrapped_images_dict)
-            
 
             print("dynamic_dict after Scrapped Image Dict", dynamic_dict)
 
@@ -205,6 +232,24 @@ class BForSaleDataSpider(scrapy.Spider):
             # Remove dollar sign, whitespace, and commas
             clean_range = range.replace('$', '').replace(' ', '').replace(',', '')
 
+            # Handle cases like 'Over5' or 'Under10'
+            if clean_range.lower().startswith('over'):
+                try:
+                    lower_bound = float(clean_range[4:]) * 1000 if 'K' in clean_range else float(clean_range[4:]) * 1000000 if 'M' in clean_range else float(clean_range[4:])
+                    return int(lower_bound)
+                except ValueError:
+                    return 0  # or another default value like `None`
+            elif clean_range.lower().startswith('under'):
+                try:
+                    lower_bound = float(clean_range[5:]) * 1000 if 'K' in clean_range else float(clean_range[5:]) * 1000000 if 'M' in clean_range else float(clean_range[5:])
+                    return int(lower_bound)
+                except ValueError:
+                    return 0  # or another default value like `None`
+
+            # Check if the input is a valid numeric value
+            if not clean_range or not any(char.isdigit() for char in clean_range):
+                return 0  # or another default value like `None`
+
             # Check if the input is a range
             if '-'  in clean_range:            
                 # Split the range into lower and upper bounds
@@ -213,12 +258,15 @@ class BForSaleDataSpider(scrapy.Spider):
                 lower_bound = clean_range
             
             # Convert to absolute number
-            if 'K' in lower_bound:
-                lower_bound = int(float(lower_bound.replace('K', '')) * 1000)
-            elif 'M' in lower_bound:
-                lower_bound = int(float(lower_bound.replace('M', '')) * 1000000)
-            else:
-                lower_bound = int(lower_bound)
+            try:
+                if 'K' in lower_bound:
+                    lower_bound = int(float(lower_bound.replace('K', '')) * 1000)
+                elif 'M' in lower_bound:
+                    lower_bound = int(float(lower_bound.replace('M', '')) * 1000000)
+                else:
+                    lower_bound = int(lower_bound)
+            except ValueError:
+                return 0  # or another default value like `None`
             
             return lower_bound
 
@@ -266,15 +314,56 @@ class BForSaleDataSpider(scrapy.Spider):
             'listing_para': safe_strip(raw_business_description),
         }
 
+        # Add seller_financing only if it is True
+        if sellerFinacingAvailable:
+            item['seller_financing'] = "yes"
+
         # Get today's date in the format YYYYMMDD
         today_date = datetime.now().strftime("%Y%m%d")
 
-        outputfile = 'business_for_sale_data'+today_date+'.json'
+        outputfile = f'business_for_sale_data_{today_date}.json'
 
         # self.logger.debug(f'Business data extracted: {item}')
         # self.write_to_csv('business_data.csv', item)
         self.write_to_json(outputfile, item)
+
+        # Get the environment variable value
+        s3BucketName = os.getenv('OUTPUT_S3_BUCKET_NAME')  # Default to 'local' if not set
+        
+        # Define the S3 bucket and object name
+        s3_bucket = s3BucketName
+        s3_object_name = outputfile
+
+        # Upload the JSON file to S3
+        upload_success = upload_to_s3(outputfile, s3_bucket, s3_object_name)
+
+        if upload_success:
+            self.logger.info(f'Successfully uploaded {outputfile} to S3 bucket {s3_bucket}')
+        else:
+            self.logger.error(f'Failed to upload {outputfile} to S3 bucket {s3_bucket}')
+
         yield item
+
+    def upload_to_s3(file_name, bucket, object_name=None):
+        """
+        Upload a file to an S3 bucket.
+
+        :param file_name: File to upload
+        :param bucket: Bucket to upload to
+        :param object_name: S3 object name. If not specified, file_name is used
+        """
+        # If S3 object_name was not specified, use file_name
+        if object_name is None:
+            object_name = file_name
+
+        # Upload the file
+        s3_client = boto3.client('s3')
+        try:
+            s3_client.upload_file(file_name, bucket, object_name)
+            return True
+        except Exception as e:
+            print(f"Error uploading {file_name} to S3: {e}")
+            return False
 
     @staticmethod
     def write_to_csv(filename, item):
