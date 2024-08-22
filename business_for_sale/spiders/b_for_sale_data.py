@@ -7,11 +7,38 @@ import dotenv
 import re
 import os
 import boto3
-
+import pandas as pd
 
 dotenv.load_dotenv()
 NEW_IMAGE_SCRAPPED_SQS_URL = os.environ.get("NEW_IMAGE_SCRAPPED_SQS_URL")
 
+# Determine the environment
+runEnv = os.getenv('RUN_ENV', 'local')  # Default to 'local' if not set
+
+# Set file path based on the environment
+if runEnv == 'production':
+    category_mapping_file_path = '/home/ubuntu/business_for_sale/business_for_sale/spiders/CategoryMapping.csv'
+else:
+    category_mapping_file_path = '/Users/vikas/builderspace/business_for_sale/business_for_sale/spiders/CategoryMapping.csv'
+
+# Load the CSV file into a dictionary for category mapping
+def load_category_mappings(category_mapping_file_path):
+    df = pd.read_csv(category_mapping_file_path)
+    return dict(zip(df['Original Category'], df['Mapped Category']))
+
+# Load the mappings at the start
+category_mapping = load_category_mappings(category_mapping_file_path)
+
+def get_mapped_category(computed_category):
+    # Check if the computed category exists in the dictionary
+    if computed_category in category_mapping:
+        # Print the mapped category if a match is found
+        print("Mapped Category:", category_mapping[computed_category])
+        return category_mapping[computed_category]
+    else:
+        # Print a message if no match is found
+        print("No mapped category found for:", computed_category)
+        return computed_category
 
 class BForSaleDataSpider(scrapy.Spider):
     name = "b_for_sale_data"
@@ -270,7 +297,8 @@ class BForSaleDataSpider(scrapy.Spider):
             
             return lower_bound
 
-        computed_category = category
+        computed_category = get_mapped_category(category)
+        
         broker_listing_party = ""
         broker_phone = ""
         broker_name = ""
