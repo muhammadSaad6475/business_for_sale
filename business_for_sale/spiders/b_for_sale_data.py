@@ -43,6 +43,22 @@ def get_mapped_category(computed_category):
 class BForSaleDataSpider(scrapy.Spider):
     name = "b_for_sale_data"
 
+    custom_settings = {
+        "ZYTE_API_EXPERIMENTAL_COOKIES_ENABLED": True,
+        'DOWNLOAD_HANDLERS': {
+            "http": "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
+            "https": "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
+        },
+        'DOWNLOADER_MIDDLEWARES': {
+            "scrapy_zyte_api.ScrapyZyteAPIDownloaderMiddleware": 1000,
+            "scrapy_poet.InjectionMiddleware": 543,
+        },
+        'REQUEST_FINGERPRINTER_CLASS': "scrapy_zyte_api.ScrapyZyteAPIRequestFingerprinter",
+        'TWISTED_REACTOR': "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
+        'ZYTE_API_KEY': "a8da7c3a91cc41059301563982d13846",
+        "ZYTE_API_TRANSPARENT_MODE": True,
+    }
+
     def extractCategory(self, url):
         # Use a regular expression to find the relevant segment in the URL
         match = re.search(r"/us/search/([^?]+)", url)
